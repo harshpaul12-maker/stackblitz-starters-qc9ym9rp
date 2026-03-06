@@ -51,7 +51,7 @@ async function sendEmailNotification(ticket) {
 // ─────────────────────────────────────────────────────────────
 // JIRA API HELPERS
 // ─────────────────────────────────────────────────────────────
-async function apiCreateTicket(ticket: any) {
+async function apiCreateTicket(ticket) {
   const res = await fetch("/api/tickets", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -68,7 +68,7 @@ async function apiFetchTickets() {
   return data.tickets || [];
 }
 
-async function apiUpdateStatus(jiraId: string, action: string) {
+async function apiUpdateStatus(jiraId, action) {
   const res = await fetch("/api/tickets", {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -77,7 +77,7 @@ async function apiUpdateStatus(jiraId: string, action: string) {
   if (!res.ok) throw new Error("Failed to update status");
 }
 
-async function apiDeleteTicket(jiraId: string) {
+async function apiDeleteTicket(jiraId) {
   const res = await fetch("/api/tickets", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
