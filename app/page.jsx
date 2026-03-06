@@ -14,11 +14,7 @@ const CONFIG = {
 };
 // ============================================================
 
-const STORAGE_KEY = "helpdesk-tickets";
 
-function generateTicketId() {
-  return "TKT-" + Date.now().toString(36).toUpperCase();
-}
 
 async function sendEmailNotification(ticket) {
   if (
@@ -53,23 +49,41 @@ async function sendEmailNotification(ticket) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// STORAGE HELPERS (localStorage)
+// JIRA API HELPERS
 // ─────────────────────────────────────────────────────────────
-function loadTickets() {
-  try {
-    const data = localStorage.getItem(STORAGE_KEY);
-    return data ? JSON.parse(data) : [];
-  } catch {
-    return [];
-  }
+async function apiCreateTicket(ticket: any) {
+  const res = await fetch("/api/tickets", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(ticket),
+  });
+  if (!res.ok) throw new Error("Failed to create ticket");
+  return res.json();
 }
 
-function saveTickets(tickets) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(tickets));
-  } catch (e) {
-    console.error("Save failed:", e);
-  }
+async function apiFetchTickets() {
+  const res = await fetch("/api/tickets", { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch tickets");
+  const data = await res.json();
+  return data.tickets || [];
+}
+
+async function apiUpdateStatus(jiraId: string, action: string) {
+  const res = await fetch("/api/tickets", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ jiraId, action }),
+  });
+  if (!res.ok) throw new Error("Failed to update status");
+}
+
+async function apiDeleteTicket(jiraId: string) {
+  const res = await fetch("/api/tickets", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ jiraId }),
+  });
+  if (!res.ok) throw new Error("Failed to delete ticket");
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -96,21 +110,24 @@ function TicketForm({ onSubmit }) {
     setTouched({ name: true, emailCreation: true, emailSharing: true });
     if (!isValid) return;
     setLoading(true);
-    const ticket = {
-      id: generateTicketId(),
-      name: name.trim(),
-      emailCreation: emailCreation.trim(),
-      emailSharing: emailSharing.trim(),
-      type,
-      passwordRequested: isChange && passwordRequested.trim() ? passwordRequested.trim() : null,
-      status: "Open",
-      createdAt: new Date().toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }),
-    };
-    onSubmit(ticket);
-    sendEmailNotification(ticket);
-    setTicketId(ticket.id);
-    setSubmitted(true);
-    setLoading(false);
+    try {
+      const ticketData = {
+        name: name.trim(),
+        emailCreation: emailCreation.trim(),
+        emailSharing: emailSharing.trim(),
+        type,
+        passwordRequested: isChange && passwordRequested.trim() ? passwordRequested.trim() : null,
+      };
+      const result = await apiCreateTicket(ticketData);
+      sendEmailNotification({ ...ticketData, id: result.id });
+      setTicketId(result.id);
+      setSubmitted(true);
+    } catch (e) {
+      alert("Something went wrong submitting your ticket. Please try again.");
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const reset = () => {
@@ -234,7 +251,7 @@ function TicketForm({ onSubmit }) {
   );
 }
 
-function AdminDashboard({ tickets, onUpdateStatus, onDelete }) {
+function AdminDashboard({ tickets, onUpdateStatus, onDelete, onRefresh }) {
   const [filter, setFilter] = useState("All");
   const [search, setSearch] = useState("");
 
@@ -276,6 +293,7 @@ function AdminDashboard({ tickets, onUpdateStatus, onDelete }) {
           <h1 style={admStyles.title}>Admin Dashboard</h1>
           <p style={admStyles.sub}>{counts.total} ticket{counts.total !== 1 ? "s" : ""} in the system</p>
         </div>
+        <button style={admStyles.refreshBtn} onClick={onRefresh}>↻ Refresh</button>
       </div>
 
       {/* Stat Cards */}
@@ -359,11 +377,11 @@ function AdminDashboard({ tickets, onUpdateStatus, onDelete }) {
                     <div style={{ display: "flex", gap: 6 }}>
                       <button
                         style={t.status === "Open" ? admStyles.resolveBtn : admStyles.reopenBtn}
-                        onClick={() => onUpdateStatus(t.id, t.status === "Open" ? "Resolved" : "Open")}
+                        onClick={() => onUpdateStatus(t.jiraId, t.status)}
                       >
                         {t.status === "Open" ? "Resolve" : "Reopen"}
                       </button>
-                      <button style={admStyles.deleteBtn} onClick={() => onDelete(t.id)}>✕</button>
+                      <button style={admStyles.deleteBtn} onClick={() => onDelete(t.jiraId)}>✕</button>
                     </div>
                   </td>
                 </tr>
@@ -410,39 +428,54 @@ function LoginScreen({ onLogin }) {
 // MAIN APP
 // ─────────────────────────────────────────────────────────────
 export default function App() {
-  const [view, setView] = useState("form"); // "form" | "login" | "admin"
+  const [view, setView] = useState("form");
   const [tickets, setTickets] = useState([]);
   const [loaded, setLoaded] = useState(false);
+  const [dashError, setDashError] = useState("");
+
+  const fetchTickets = async () => {
+    try {
+      setDashError("");
+      const t = await apiFetchTickets();
+      setTickets(t);
+    } catch (e) {
+      setDashError("Could not load tickets from Jira. Check your API config.");
+    } finally {
+      setLoaded(true);
+    }
+  };
 
   useEffect(() => {
-    const t = loadTickets();
-    setTickets(t);
-    setLoaded(true);
-  }, []);
+    if (view === "admin") fetchTickets();
+    else setLoaded(true);
+  }, [view]);
 
-  const handleNewTicket = (ticket) => {
-    const updated = [ticket, ...tickets];
-    setTickets(updated);
-    saveTickets(updated);
+  const handleNewTicket = () => {
+    // Ticket already created in Jira via the form — nothing extra needed here
   };
 
-  const handleUpdateStatus = (id, status) => {
-    const updated = tickets.map(t => t.id === id ? { ...t, status } : t);
-    setTickets(updated);
-    saveTickets(updated);
+  const handleUpdateStatus = async (jiraId, currentStatus) => {
+    const action = currentStatus === "Open" ? "resolve" : "reopen";
+    try {
+      await apiUpdateStatus(jiraId, action);
+      await fetchTickets();
+    } catch (e) {
+      alert("Failed to update ticket status.");
+    }
   };
 
-  const handleDelete = (id) => {
-    const updated = tickets.filter(t => t.id !== id);
-    setTickets(updated);
-    saveTickets(updated);
+  const handleDelete = async (jiraId) => {
+    if (!confirm("Are you sure you want to delete this ticket from Jira?")) return;
+    try {
+      await apiDeleteTicket(jiraId);
+      await fetchTickets();
+    } catch (e) {
+      alert("Failed to delete ticket.");
+    }
   };
-
-  if (!loaded) return <div style={styles.loading}>Loading…</div>;
 
   return (
     <div style={styles.app}>
-      {/* Nav */}
       <nav style={styles.nav}>
         <span style={styles.navBrand}>Lighthouse Canton</span>
         <div style={styles.navLinks}>
@@ -460,13 +493,18 @@ export default function App() {
 
       <main style={{ ...styles.main, background: view === "admin" ? "#0f172a" : undefined }}>
         {view === "form" && <div style={styles.formWrap}><TicketForm onSubmit={handleNewTicket} /></div>}
-        {view === "login" && <div style={styles.formWrap}><LoginScreen onLogin={() => setView("admin")} /></div>}
+        {view === "login" && <div style={styles.formWrap}><LoginScreen onLogin={() => { setLoaded(false); setView("admin"); }} /></div>}
         {view === "admin" && (
-          <AdminDashboard
-            tickets={tickets}
-            onUpdateStatus={handleUpdateStatus}
-            onDelete={handleDelete}
-          />
+          !loaded
+            ? <div style={{ color: "#94a3b8", textAlign: "center", padding: "80px 0" }}>Loading tickets from Jira…</div>
+            : dashError
+            ? <div style={{ color: "#ef4444", textAlign: "center", padding: "80px 0" }}>{dashError}</div>
+            : <AdminDashboard
+                tickets={tickets}
+                onUpdateStatus={handleUpdateStatus}
+                onDelete={handleDelete}
+                onRefresh={fetchTickets}
+              />
         )}
       </main>
     </div>
@@ -603,5 +641,5 @@ const admStyles = {
   reopenBtn: { padding: "5px 14px", borderRadius: 8, border: "none", background: "linear-gradient(135deg, #f59e0b, #d97706)", color: "#fff", cursor: "pointer", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" },
   deleteBtn: { padding: "5px 10px", borderRadius: 8, border: "none", background: "linear-gradient(135deg, #ef4444, #dc2626)", color: "#fff", cursor: "pointer", fontSize: 12, fontWeight: 700 },
 
-  empty: { textAlign: "center", padding: "64px 0", background: "#1e293b", borderRadius: 16 },
+  refreshBtn: { padding: "8px 18px", borderRadius: 10, border: "1.5px solid #334155", background: "transparent", color: "#94a3b8", cursor: "pointer", fontSize: 14, fontWeight: 600 },
 };
